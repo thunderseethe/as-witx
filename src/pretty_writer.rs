@@ -12,12 +12,11 @@ use std::rc::Rc;
 //}
 
 #[derive(Clone)]
-pub struct PrettyWriter<W: Write> {
+pub struct PrettyWriter {
     writer: String,
     indent: usize,
     indent_bytes: &'static str,
     continuation_bytes: &'static str,
-    _marker: std::marker::PhantomData<W>
 }
 
 //impl<W: Write> Clone for PrettyWriter<W> {
@@ -33,7 +32,7 @@ pub struct PrettyWriter<W: Write> {
 
 const DEFAULT_CONTINUATION_BYTES: &str = "    ";
 
-impl<W: Write> PrettyWriter<W> {    
+impl PrettyWriter {    
     /// Create a new `PrettyWriter` with `indent` initial units of indentation
     pub fn new_with_indent(indent: usize, indent_bytes: &'static str) -> Self {
         PrettyWriter {
@@ -41,7 +40,6 @@ impl<W: Write> PrettyWriter<W> {
             indent,
             indent_bytes,
             continuation_bytes: DEFAULT_CONTINUATION_BYTES,
-            _marker: std::marker::PhantomData,
         }
     }
 
@@ -49,9 +47,9 @@ impl<W: Write> PrettyWriter<W> {
         Self::new_with_indent(0, indent_bytes)
     }
     /// Run block_ops as an indented block within the current `PrettyWriter`
-    pub fn with_block<'a: 'b, 'b>(&'a mut self, block_ops: impl FnOnce(&'b mut Self) -> ()) -> &'a mut Self {
+    pub fn with_block(&mut self, block_ops: impl FnOnce(&mut Self) -> ()) -> &mut Self {
        self.indent += 1;
-       block_ops(&mut self);
+       block_ops(self);
        self.indent -= 1;
        self
     }
@@ -101,6 +99,10 @@ impl<W: Write> PrettyWriter<W> {
 
     pub fn eob(&mut self) -> &mut Self {
         self.eol()
+    }
+
+    pub fn finish(&mut self) -> String {
+        self.writer.clone()
     }
 }
 

@@ -6,22 +6,22 @@ use crate::pretty_writer::PrettyWriter;
 use std::io::Write;
 use std::path::Path;
 
-pub struct Generator<W: Write> {
-    w: PrettyWriter<W>,
+pub struct Generator {
+    w: PrettyWriter,
     module_name: Option<String>,
     embed_header: bool,
 }
 
-impl<W: Write> Generator<W> {
-    pub fn new(writer: W, module_name: Option<String>, embed_header: bool) -> Self {
+impl Generator {
+    pub fn new(module_name: Option<String>, embed_header: bool) -> Self {
         let w = PrettyWriter::new("    ");
         Generator { w, module_name, embed_header }
     }
 
-    pub fn generate<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+    pub fn generate<P: AsRef<Path>>(&mut self, path: P) -> Result<String, Error> {
         let document = witx::load(&[path])?;
         if self.embed_header {
-            self.header()?;
+            self.header();
         }
         for type_ in document.typenames() {
             self.define_type(type_.as_ref())?;
@@ -29,10 +29,10 @@ impl<W: Write> Generator<W> {
         for module in document.modules() {
             self.define_module(module.as_ref())?;
         }
-        Ok(())
+        Ok(self.w.finish())
     }
 
-    fn header(&mut self) -> Result<(), Error> {
+    fn header(&mut self) {
         self.w.write_lines(
             "
 /*
@@ -86,7 +86,6 @@ export class WasiArray<T> {
 ",
         )
         .eob();
-        Ok(())
     }
 
     fn define_as_alias(
@@ -100,104 +99,6 @@ export class WasiArray<T> {
 
     fn define_as_handle(&mut self, as_type: &ASType) -> Result<(), Error> {
         self.w.write_line(&format!("export type {} = {};", as_type, ASType::Handle));
-        Ok(())
-    }
-
-    fn define_variant_case_accessors(
-        &mut self,
-        as_type: &ASType,
-        i: usize,
-        variant: &witx::Case,
-    ) -> Result<(), Error> {
-        let variant_name = variant.name.as_str();
-        match variant.tref.as_ref() {
-            None => {
-                self.w.write_line(&format!("static {}(): {} {{", variant_name, as_type))
-                    .indent()
-                    .write_line(&format!("return {}.new({});", as_type, i))
-                    .write_line("}")
-                    .eob();
-
-                self.w.write_line(&format!("set_{}(): void {{", variant_name))
-                    .indent()
-                    .write_line(&format!("this.tag = {};", i))
-                    .write_line("}")
-                    .eob();
-
-                self.w.write_line(&format!("is_{}(): bool {{", variant_name))
-                    .indent()
-                    .write_line(&format!("return this.tag === {};", i))
-                    .write_line("}");
-            }
-            Some(variant_type) => {
-                let as_variant_type = ASType::from(variant_type);
-                self.w.write_line(&format!(
-                    "static {}(val: {}): {} {{",
-                    variant_name, as_variant_type, as_type
-                ));
-                self.w.with_block(|w| {
-                    w.write_line(&format!("return {}.new({}, val);", as_type, i));
-                });
-                self.w.write_line("}").eob();
-
-                self.w.write_line(&format!(
-                    "set_{}(val: {}): void {{",
-                    variant_name, as_variant_type
-                ));
-                self.w.with_block(|w| {
-                    w.write_line(&format!("this.tag = {};", i))
-                     .write_line("this.set(val);");
-                });
-                self.w.write_line("}").eob();
-
-                self.w.write_line(&format!("is_{}(): bool {{", variant_name))
-                    .indent()
-                    .write_line(&format!("return this.tag === {};", i))
-                    .write_line("}")
-                    .eob();
-
-                if as_variant_type.is_nullable() {
-                    self.w.write_line(&format!(
-                        "get_{}(): {} | null {{",
-                        variant_name, as_variant_type
-                    ));
-                } else {
-                    self.w.write_line(&format!("get_{}(): {} {{", variant_name, as_variant_type));
-                }
-                self.w.with_block(|w| {
-                    if as_variant_type.is_nullable() {
-                        w.write_line(&format!("if (this.tag !== {}) {{ return null; }}", i));
-                    }
-                    w.write_line(&format!("return this.get<{}>();", as_variant_type));
-                });
-                self.w.write_line("}");
-            }
-        }
-        Ok(())
-    }
-
-    fn define_variant_case(
-        &mut self,
-        as_type: &ASType,
-        i: usize,
-        variant: &witx::Case,
-    ) -> Result<(), Error> {
-        let variant_name = variant.name.as_str();
-        match variant.tref.as_ref() {
-            None => {
-                self.w.write_line(&format!("// --- {}: void if tag={}", variant_name, i));
-            }
-            Some(variant_type) => {
-                self.w.write_line(&format!(
-                    "// --- {}: {} if tag={}",
-                    variant_name,
-                    ASType::from(variant_type),
-                    i
-                ));
-            }
-        }
-        self.w.eob();
-        self.define_variant_case_accessors(as_type, i, variant)?;
         Ok(())
     }
 
@@ -289,7 +190,7 @@ export class WasiArray<T> {
 
             for (i, variant) in variants.iter().enumerate() {
                 w.eob();
-                self.define_variant_case(as_type, i, variant);
+                define_variant_case(w, as_type, i, variant);
             }
         });
         self.w.write_line("}");
@@ -318,7 +219,7 @@ export class WasiArray<T> {
             for variant in variants {
                 let variant_name = variant.name.as_str();
                 let variant_type = ASType::from(&variant.tref);
-                self.write_docs(&variant.docs);
+                write_docs(w, &variant.docs);
                 w.write_line(&format!("{}: {};", variant_name, variant_type));
             }
         });
@@ -363,7 +264,7 @@ export class WasiArray<T> {
         if docs.is_empty() {
             self.w.write_line(&format!("/** {} */", as_type));
         } else {
-            self.write_docs(&type_.docs)?;
+            write_docs(&mut self.w, &type_.docs);
         }
         let tref = &type_.tref;
         match tref {
@@ -396,7 +297,7 @@ export class WasiArray<T> {
         if docs.is_empty() {
             self.w.write_line(&format!("\n/** {} */", name));
         } else {
-            self.write_docs(docs)?;
+            write_docs(&mut self.w, docs);
         }
         let s_in: Vec<_> = func
             .params
@@ -462,18 +363,6 @@ export class WasiArray<T> {
         Ok(())
     }
 
-    fn write_docs(&mut self, docs: &str) -> Result<(), Error> {
-        if docs.is_empty() {
-            return Ok(());
-        }
-        self.w.write_line("/**");
-        for docs_line in docs.lines() {
-            self.w.write_line(&format!(" * {}", docs_line));
-        }
-        self.w.write_line(" */");
-        Ok(())
-    }
-
     fn params_to_as(params: &[witx::InterfaceFuncParam]) -> Vec<(String, ASType)> {
         let mut as_params = vec![];
         for param in params {
@@ -507,4 +396,111 @@ export class WasiArray<T> {
             witx::TypeRef::Value(type_) => type_.as_ref(),
         }
     }
+}
+
+fn define_variant_case(
+    w: &mut PrettyWriter,
+    as_type: &ASType,
+    i: usize,
+    variant: &witx::Case,
+) {
+    let variant_name = variant.name.as_str();
+    match variant.tref.as_ref() {
+        None => {
+            w.write_line(&format!("// --- {}: void if tag={}", variant_name, i));
+        }
+        Some(variant_type) => {
+            w.write_line(&format!(
+                "// --- {}: {} if tag={}",
+                variant_name,
+                ASType::from(variant_type),
+                i
+            ));
+        }
+    }
+    w.eob();
+    define_variant_case_accessors(w, as_type, i, variant);
+}
+
+fn define_variant_case_accessors(
+    w: &mut PrettyWriter,
+    as_type: &ASType,
+    i: usize,
+    variant: &witx::Case,
+) {
+    let variant_name = variant.name.as_str();
+    match variant.tref.as_ref() {
+        None => {
+            w.write_line(&format!("static {}(): {} {{", variant_name, as_type))
+                .indent()
+                .write_line(&format!("return {}.new({});", as_type, i))
+                .write_line("}")
+                .eob();
+
+            w.write_line(&format!("set_{}(): void {{", variant_name))
+                .indent()
+                .write_line(&format!("this.tag = {};", i))
+                .write_line("}")
+                .eob();
+
+            w.write_line(&format!("is_{}(): bool {{", variant_name))
+                .indent()
+                .write_line(&format!("return this.tag === {};", i))
+                .write_line("}");
+        }
+        Some(variant_type) => {
+            let as_variant_type = ASType::from(variant_type);
+            w.write_line(&format!(
+                "static {}(val: {}): {} {{",
+                variant_name, as_variant_type, as_type
+            ));
+            w.with_block(|w| {
+                w.write_line(&format!("return {}.new({}, val);", as_type, i));
+            });
+            w.write_line("}").eob();
+
+            w.write_line(&format!(
+                "set_{}(val: {}): void {{",
+                variant_name, as_variant_type
+            ));
+            w.with_block(|w| {
+                w.write_line(&format!("this.tag = {};", i))
+                    .write_line("this.set(val);");
+            });
+            w.write_line("}").eob();
+
+            w.write_line(&format!("is_{}(): bool {{", variant_name))
+                .indent()
+                .write_line(&format!("return this.tag === {};", i))
+                .write_line("}")
+                .eob();
+
+            if as_variant_type.is_nullable() {
+                w.write_line(&format!(
+                    "get_{}(): {} | null {{",
+                    variant_name, as_variant_type
+                ));
+            } else {
+                w.write_line(&format!("get_{}(): {} {{", variant_name, as_variant_type));
+            }
+            w.with_block(|w| {
+                if as_variant_type.is_nullable() {
+                    w.write_line(&format!("if (this.tag !== {}) {{ return null; }}", i));
+                }
+                w.write_line(&format!("return this.get<{}>();", as_variant_type));
+            });
+            w.write_line("}");
+        }
+    }
+}
+
+fn write_docs(w: &mut PrettyWriter, docs: &str) {
+    if docs.is_empty() {
+        return;
+    }
+    w.write_line("/**");
+    for docs_line in docs.lines() {
+        w.write_line(&format!(" * {}", docs_line));
+    }
+    w.write_line(" */");
 }
