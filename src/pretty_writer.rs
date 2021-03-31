@@ -1,15 +1,3 @@
-use super::Error;
-use std::cell::RefCell;
-use std::convert::Into;
-use std::io::prelude::*;
-use std::rc::Rc;
-
-//pub struct PrettyWriter<W: Write> {
-//    writer: Rc<RefCell<W>>,
-//    indent: u32,
-//    indent_bytes: &'static str,
-//    continuation_bytes: &'static str,
-//}
 
 #[derive(Clone)]
 pub struct PrettyWriter {

@@ -3,7 +3,6 @@ use witx::Layout;
 use crate::astype::*;
 use crate::error::*;
 use crate::pretty_writer::PrettyWriter;
-use std::io::Write;
 use std::path::Path;
 
 pub struct Generator {
@@ -349,6 +348,7 @@ export class WasiArray<T> {
                 self.w.continuation().write_line(&as_params.join(", "));
             }
         }
+        println!("{:?}", return_value);
         let return_as_type_and_comment = match return_value {
             None => (ASType::Void, "".to_string()),
             Some(x) => (x.1.clone(), format!(" /* {} */", x.0)),
