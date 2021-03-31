@@ -1,12 +1,8 @@
-mod astype;
-mod error;
-mod generator;
-mod pretty_writer;
 
 #[macro_use]
 extern crate clap;
 
-use crate::generator::*;
+use as_witx_lib::Generator;
 use clap::Arg;
 use std::fs::File;
 use std::io::Write;
