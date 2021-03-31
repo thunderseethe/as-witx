@@ -35,6 +35,13 @@ fn main() {
                 .required(true)
                 .help("wITX file"),
         )
+        .arg(
+            Arg::with_name("no_embedded_header")
+                .multiple(false)
+                .required(false)
+                .long("--no-embed-header")
+                .help("Disable embedded common set of types needed by generated code within output (as opposed to importing form a common file)")
+        )
         .get_matches();
 
     let writer: Box<dyn Write> = match matches.value_of("output_file") {
@@ -43,6 +50,7 @@ fn main() {
     };
     let witx_file = matches.value_of("witx_file").unwrap();
     let module_name = matches.value_of("module_name").map(|x| x.to_string());
-    let mut generator = Generator::new(writer, module_name);
+    let embed_header = matches.occurrences_of("no_embedded_header") == 0;
+    let mut generator = Generator::new(writer, module_name, embed_header);
     generator.generate(witx_file).unwrap();
 }
