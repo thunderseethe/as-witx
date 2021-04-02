@@ -3,6 +3,7 @@ use witx::*;
 use std::{fs::File, io::Read, path::PathBuf};
 
 use rayon::prelude::*;
+use dissimilar::{diff, Chunk};
 
 #[test]
 fn main() -> anyhow::Result<()> {
@@ -31,13 +32,10 @@ fn main() -> anyhow::Result<()> {
         })
         .collect::<Vec<_>>();
 
-    //for res in results {
-    //    let change = res?;
-    //    for diff in &change.diffs {
-    //        println!("{:?}", diff)
-    //    }
-    //    assert_eq!(change.distance, 0, "\n---- Diff Report ----\n{}", change)
-    //}
+    for result in results {
+        let (diff, report) = result?;
+        assert!(diff, "\n----- Diff Report -----\n{}", report);
+    }
 
     Ok(())
 }
@@ -47,7 +45,7 @@ fn to_ts(name: &str) -> String {
     format!("{}.ts", base)
 }
 
-fn run_test((in_path, out_path): (PathBuf, PathBuf)) -> anyhow::Result<Vec<Chunk<'_>>> {
+fn run_test((in_path, out_path): (PathBuf, PathBuf)) -> anyhow::Result<(bool, String)> {
     let gen = Generator::new(None, false)
         .generate(in_path)?;
 
@@ -56,42 +54,47 @@ fn run_test((in_path, out_path): (PathBuf, PathBuf)) -> anyhow::Result<Vec<Chunk
     let mut expected = String::new();
     let _ = f.read_to_string(&mut expected)?;
 
-    Ok(diff(&gen, &expected))
+    let diffs = Diff(diff(&gen, &expected));
+    Ok((diffs.is_equal(), format!("{}", diffs)))
 }
 
-enum Chunk<'a> {
-    Equal(&'a str),
-    Remove(&'a str),
-    Insert(&'a str),
-}
+use std::fmt;
 
-use std::cmp::{min, max};
-fn diff<'a>(old: &'a str, new: &'a str) -> Vec<Chunk<'a>> {
-    fn _diff<'a>(old: &'a str, new: &'a str, i: usize, j: usize) -> Vec<Chunk<'a>> {
-        let (n, m) = (old.len(), new.len());
-        let (l, z) = (n + m, 2 * (min(n, m)));
+pub struct Diff<'a>(Vec<Chunk<'a>>);
 
-        if m < 0 {
-            return vec![Chunk::Remove(old)];
-        }
-        if n < 0 {
-            return vec![Chunk::Insert(new)];
-        }
-
-        let (w, g, p) = (n - m, vec![0; z], vec![0; z]);
-        for h in 0..(l/2 + (l%2 == 0) + 1) {
-            for r in 0..2 {
-                let (c, d, o, m) = if r == 0 { (g, p, 1, 1) } else { (p, g, 0, -1) }
-                for k in (-(h - 2 * max(0, h-m))..(h - 2 * max(0,h-n) + 1)).step_by(2) {
-                    let mut a = if k==-h || k!=h && c[(k-1)%z]<c[(k+1)%z] { c[(k+1)%z] } else { c[(k-1)%z]+1 };
-                    let mut b = a-k;
-                    let (s, t) = (a, b);
-                    while a<n && b<m && e[(1-o)]
+impl<'a> fmt::Display for Diff<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for c in &self.0 {
+            match c {
+                Chunk::Equal(x) => {
+                    write!(f, "{}", x)?
+                },
+                Chunk::Insert(x) => {
+                    write!(f, "\x1b[92m{}\x1b[0m", x.replace('\n', "\\n"))?
+                },
+                Chunk::Delete(x) => {
+                    write!(f, "\x1b[91m{}\x1b[0m", x.replace('\n', "\\n"))?
                 }
             }
         }
+        Ok(())
     }
-    _diff(old, new, 0, 0)
+}
+
+impl Diff<'_> {
+    fn is_equal(&self) -> bool {
+        !self.0.iter().any(|c| match c {
+            Chunk::Delete(_) | Chunk::Insert(_) => true,
+            Chunk::Equal(_) => false,
+        })
+    }
+
+    fn diff_chunks<'a>(&'a self) -> impl Iterator<Item=&'a Chunk<'a>> {
+        self.0.iter().filter(|c| match c {
+            Chunk::Delete(_) | Chunk::Insert(_) => true,
+            Chunk::Equal(_) => false,
+        })
+    }
 }
 
 /*

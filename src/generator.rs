@@ -273,6 +273,7 @@ export class WasiArray<T> {
                 self.define_as_alias(&as_type, &other_type.as_ref().into())
             }
             witx::TypeRef::Value(witx_type) => {
+                println!("{:?}", as_type);
                 self.define_as_witx_type(&as_type, &witx_type.as_ref())
             }
         };
