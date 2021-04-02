@@ -217,8 +217,9 @@ export class WasiArray<T> {
     ) {
         self.w.write_line("// @ts-ignore: decorator")
             .write_line("@unmanaged")
-            .write_line(&format!("export class {} {{", as_type));
-        self.w.with_block(|w| {
+            .write("export class ")
+            .write(&(format!("{} ", as_type).to_camel_case()));
+        self.w.braced(|w| {
             for member in &record.members {
                 let variant_name = to_as_name(member.name.as_str());
                 let variant_type = ASType::from(&member.tref);
