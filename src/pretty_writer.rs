@@ -32,9 +32,9 @@ impl PrettyWriter {
     }
 
     pub fn braced(&mut self, braced_ops: impl FnOnce(&mut Self) -> ()) -> &mut Self {
-        self.writer.push('{');
+        self.writer.push_str("{\n");
         self.with_block(braced_ops);
-        self.writer.push('}');
+        self.writer.push_str("}\n");
         self
     }
 

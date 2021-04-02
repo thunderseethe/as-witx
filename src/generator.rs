@@ -1,4 +1,4 @@
-use witx::Layout;
+use witx::{Layout, NamedType};
 use heck::*;
 
 use crate::astype::*;
@@ -10,6 +10,44 @@ pub struct Generator {
     w: PrettyWriter,
     module_name: Option<String>,
     embed_header: bool,
+}
+
+trait Language {}
+struct AssemblyScript;
+
+impl Language for AssemblyScript {}
+
+trait Render<T> {
+    fn render(&self, out: &mut PrettyWriter);
+}
+
+impl Render<AssemblyScript> for witx::NamedType {
+    fn render(&self, w: &mut PrettyWriter) {
+        let as_type = ASType::Alias(self.name.as_str().to_string());
+        let docs = &self.docs;
+        if docs.is_empty() {
+            w.write_line(&format!("/** {} */", as_type));
+        } else {
+            write_docs(&mut w, &self.docs);
+        }
+        let tref = &self.tref;
+        match tref {
+            witx::TypeRef::Name(other_type) => {
+                w.write_line(&format!("export type {} = {};", as_type, 
+                    &other_type.as_ref().into()));
+            }
+            witx::TypeRef::Value(witx_type) => {
+                define_as_witx_type(&as_type, &witx_type.as_ref())
+            }
+        };
+        w.eob();
+    }
+}
+
+impl Render<AssemblyScript> for witx::Type {
+    fn render(&self, out: &mut PrettyWriter) {
+        
+    }
 }
 
 impl Generator {
@@ -218,7 +256,9 @@ export class WasiArray<T> {
         self.w.write_line("// @ts-ignore: decorator")
             .write_line("@unmanaged")
             .write("export class ")
-            .write(&(format!("{} ", as_type).to_camel_case()));
+            .write(&(format!("{}", as_type).to_camel_case()))
+            .write(" ");
+
         self.w.braced(|w| {
             for member in &record.members {
                 let variant_name = to_as_name(member.name.as_str());
@@ -227,7 +267,6 @@ export class WasiArray<T> {
                 w.write_line(&format!("{}: {};", variant_name, variant_type));
             }
         });
-        self.w.write_line("}");
     }
 
     fn define_as_list(
@@ -273,7 +312,6 @@ export class WasiArray<T> {
                 self.define_as_alias(&as_type, &other_type.as_ref().into())
             }
             witx::TypeRef::Value(witx_type) => {
-                println!("{:?}", as_type);
                 self.define_as_witx_type(&as_type, &witx_type.as_ref())
             }
         };
