@@ -1,0 +1,2 @@
+(typename $pair
+    (tuple s32 s32))

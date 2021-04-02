@@ -1,4 +1,5 @@
 use witx::Layout;
+use heck::*;
 
 use crate::astype::*;
 use crate::error::*;
@@ -23,10 +24,18 @@ impl Generator {
             self.header();
         }
         for type_ in document.typenames() {
-            self.define_type(type_.as_ref())?;
+            self.define_type(type_.as_ref());
         }
         for module in document.modules() {
-            self.define_module(module.as_ref())?;
+            self.define_module(module.as_ref());
+        }
+        for c in document.constants() {
+            self.w.write_line(&format!("public const {}_{}: {} = {};"
+                , c.ty.as_str().to_shouty_snake_case()
+                , c.name.as_str().to_shouty_snake_case()
+                , c.ty.as_str().to_camel_case()
+                , c.value
+                ));
         }
         Ok(self.w.finish())
     }
@@ -91,21 +100,19 @@ export class WasiArray<T> {
         &mut self,
         as_type: &ASType,
         other_type: &ASType,
-    ) -> Result<(), Error> {
+    ) {
         self.w.write_line(&format!("export type {} = {};", as_type, other_type));
-        Ok(())
     }
 
-    fn define_as_handle(&mut self, as_type: &ASType) -> Result<(), Error> {
+    fn define_as_handle(&mut self, as_type: &ASType) {
         self.w.write_line(&format!("export type {} = {};", as_type, ASType::Handle));
-        Ok(())
     }
 
     fn define_as_variant(
         &mut self,
         as_type: &ASType,
         union: &witx::Variant,
-    ) -> Result<(), Error> {
+    ) {
         let as_tag = ASType::from(&union.tag_repr);
         let variants = &union.cases;
 
@@ -193,8 +200,6 @@ export class WasiArray<T> {
             }
         });
         self.w.write_line("}");
-
-        Ok(())
     }
 
     fn define_as_builtin(
@@ -209,55 +214,51 @@ export class WasiArray<T> {
         &mut self,
         as_type: &ASType,
         record: &witx::RecordDatatype,
-    ) -> Result<(), Error> {
-        let variants = &record.members;
+    ) {
         self.w.write_line("// @ts-ignore: decorator")
             .write_line("@unmanaged")
-            .write_line(&format!("class {} {{", as_type));
+            .write_line(&format!("export class {} {{", as_type));
         self.w.with_block(|w| {
-            for variant in variants {
-                let variant_name = variant.name.as_str();
-                let variant_type = ASType::from(&variant.tref);
-                write_docs(w, &variant.docs);
+            for member in &record.members {
+                let variant_name = to_as_name(member.name.as_str());
+                let variant_type = ASType::from(&member.tref);
+                write_docs(w, &member.docs);
                 w.write_line(&format!("{}: {};", variant_name, variant_type));
             }
         });
         self.w.write_line("}");
-        Ok(())
     }
 
     fn define_as_list(
         &mut self,
         as_type: &ASType,
         actual_as_type: &ASType,
-    ) -> Result<(), Error> {
+    ) {
         self.w.write_line(&format!(
             "export type {} = WasiArray<{}>;",
             as_type, actual_as_type
         ));
-        Ok(())
     }
 
     fn define_as_witx_type(
         &mut self,
         as_type: &ASType,
         witx_type: &witx::Type,
-    ) -> Result<(), Error> {
+    ) {
         use witx::Type::*;
         match witx_type {
-            Handle(_handle) => self.define_as_handle(as_type)?,
+            Handle(_handle) => self.define_as_handle(as_type),
             Builtin(builtin) => self.define_as_builtin(as_type, &builtin.into()),
-            Variant(ref variant) => self.define_as_variant(as_type, variant)?,
-            Record(ref record) =>  self.define_as_record(as_type, record)?,
-            List(elem) => self.define_as_list(as_type, &ASType::from(elem))?,
+            Variant(ref variant) => self.define_as_variant(as_type, variant),
+            Record(ref record) =>  self.define_as_record(as_type, record),
+            List(elem) => self.define_as_list(as_type, &ASType::from(elem)),
             ConstPointer(_) | witx::Type::Pointer(_) => {
                 panic!("Typedef's pointers are not implemented")
             }
         };
-        Ok(())
     }
 
-    fn define_type(&mut self, type_: &witx::NamedType) -> Result<(), Error> {
+    fn define_type(&mut self, type_: &witx::NamedType) {
         let as_type = ASType::Alias(type_.name.as_str().to_string());
         let docs = &type_.docs;
         if docs.is_empty() {
@@ -268,29 +269,27 @@ export class WasiArray<T> {
         let tref = &type_.tref;
         match tref {
             witx::TypeRef::Name(other_type) => {
-                self.define_as_alias(&as_type, &other_type.as_ref().into())?
+                self.define_as_alias(&as_type, &other_type.as_ref().into())
             }
             witx::TypeRef::Value(witx_type) => {
-                self.define_as_witx_type(&as_type, &witx_type.as_ref())?
+                self.define_as_witx_type(&as_type, &witx_type.as_ref())
             }
         };
         self.w.eob();
-        Ok(())
     }
 
-    fn define_module(&mut self, module: &witx::Module) -> Result<(), Error> {
+    fn define_module(&mut self, module: &witx::Module) {
         self.w.eob().write_line(&format!(
             "// ----------------------[{}]----------------------",
             module.name.as_str()
         ));
         for func in module.funcs() {
-            self.define_func(module.name.as_str(), func.as_ref())?;
+            self.define_func(module.name.as_str(), func.as_ref());
             self.w.eob();
         }
-        Ok(())
     }
 
-    fn define_func(&mut self, module_name: &str, func: &witx::InterfaceFunc) -> Result<(), Error> {
+    fn define_func(&mut self, module_name: &str, func: &witx::InterfaceFunc) {
         let docs = &func.docs;
         let name = func.name.as_str();
         if docs.is_empty() {
@@ -360,7 +359,6 @@ export class WasiArray<T> {
             "): {}{};",
             return_as_type_and_comment.0, return_as_type_and_comment.1
         ));
-        Ok(())
     }
 
     fn params_to_as(params: &[witx::InterfaceFuncParam]) -> Vec<(String, ASType)> {
@@ -503,4 +501,13 @@ fn write_docs(w: &mut PrettyWriter, docs: &str) {
         w.write_line(&format!(" * {}", docs_line));
     }
     w.write_line(" */");
+}
+
+fn to_as_name(name: &str) -> String {
+    if let Ok(_) = name.parse::<usize>() {
+        format!("_{}", name)
+    } else {
+        name.to_owned()
+    }
+
 }

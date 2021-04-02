@@ -7,17 +7,6 @@ pub struct PrettyWriter {
     continuation_bytes: &'static str,
 }
 
-//impl<W: Write> Clone for PrettyWriter<W> {
-//    fn clone(&self) -> Self {
-//        PrettyWriter {
-//            writer: self.writer.clone(),
-//            indent: self.indent,
-//            indent_bytes: self.indent_bytes,
-//            continuation_bytes: DEFAULT_CONTINUATION_BYTES,
-//        }
-//    }
-//}
-
 const DEFAULT_CONTINUATION_BYTES: &str = "    ";
 
 impl PrettyWriter {    
@@ -40,6 +29,13 @@ impl PrettyWriter {
        block_ops(self);
        self.indent -= 1;
        self
+    }
+
+    pub fn braced(&mut self, braced_ops: impl FnOnce(&mut Self) -> ()) -> &mut Self {
+        self.writer.push('{');
+        self.with_block(braced_ops);
+        self.writer.push('}');
+        self
     }
 
     /// Write raw data
@@ -91,6 +87,13 @@ impl PrettyWriter {
 
     pub fn finish(&mut self) -> String {
         self.writer.clone()
+    }
+}
+
+impl std::fmt::Write for PrettyWriter {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.indent();
+        self.writer.write_str(s)
     }
 }
 
