@@ -1,4 +1,4 @@
-use witx::{Layout, NamedType};
+use witx::{Bindgen, HandleDatatype, InterfaceFuncParam, Layout, RecordDatatype, Type, TypeRef};
 use heck::*;
 
 use crate::astype::*;
@@ -13,41 +13,269 @@ pub struct Generator {
 }
 
 trait Language {}
-struct AssemblyScript;
+struct AssemblyScript<'a> {
+    w: &'a mut PrettyWriter,
+    params: &'a [InterfaceFuncParam],
+    block_storage: Vec<String>,
+    blocks: Vec<String>,
+}
 
-impl Language for AssemblyScript {}
+impl Language for AssemblyScript<'_> {}
+impl Bindgen for AssemblyScript<'_> {
+    type Operand = String;
 
-trait Render<T> {
+    fn emit(
+        &mut self,
+        inst: &witx::Instruction<'_>,
+        operands: &mut Vec<Self::Operand>,
+        results: &mut Vec<Self::Operand>,
+    ) {
+        todo!()
+    }
+
+    fn allocate_space(&mut self, slot: usize, ty: &witx::NamedType) {
+        // need to figure out size of ty, maybe just allocate pointer?
+        self.w.write_Line(&format!("let rp{} = heap.alloc({})", slot, /*TODO*/0));
+    }
+
+    fn push_block(&mut self) {
+        let mut prev = std::mem::replace(self.w, PrettyWriter::with_ident("    "));
+        self.block_storage.push(prev.finish());
+    }
+
+    fn finish_block(&mut self, operand: Option<Self::Operand>) {
+        let to_restore = self.block_storage.pop().unwrap();
+        let w = std::mem::replace(self.w, PrettyWriter::new("    ", to_restore));
+        let src = w.finish();
+        match operand {
+            None => {
+                self.blocks.push("return;".to_string())
+            },
+            Some(s) => {
+                if src.is_empty() {
+                    self.blocks.push(s);
+                } else {
+                    self.blocks.push(format!("{{ {}; {} }}", src, s));
+                }
+            }
+        }
+    }
+}
+
+trait Render<T: Language> {
     fn render(&self, out: &mut PrettyWriter);
 }
 
-impl Render<AssemblyScript> for witx::NamedType {
+//impl Render<AssemblyScript> for witx::NamedType {
+//    fn render(&self, w: &mut PrettyWriter) {
+//        let as_type = ASType::Alias(self.name.as_str().to_string());
+//        let docs = &self.docs;
+//        if docs.is_empty() {
+//            w.write_line(&format!("/** {} */", as_type));
+//        } else {
+//            write_docs(w, &self.docs);
+//        }
+//        let tref = &self.tref;
+//        match tref {
+//            witx::TypeRef::Name(other_type) => {
+//                let other_type: ASType = other_type.as_ref().into();
+//                w.write_line(&format!("export type {} = {};", as_type, other_type));
+//            },
+//            witx::TypeRef::Value(witx_type) => {
+//                witx_type.render(w);
+//            }
+//        };
+//        w.eob();
+//    }
+//}
+
+impl Render<AssemblyScript<'_>> for witx::TypeRef {
     fn render(&self, w: &mut PrettyWriter) {
-        let as_type = ASType::Alias(self.name.as_str().to_string());
-        let docs = &self.docs;
-        if docs.is_empty() {
-            w.write_line(&format!("/** {} */", as_type));
-        } else {
-            write_docs(&mut w, &self.docs);
+        use witx::TypeRef;
+        match self {
+            TypeRef::Name(t) => {
+                w.write(&t.name.as_str().to_camel_case());
+            }
+            TypeRef::Value(v) => {
+                v.render(w);
+            }
         }
-        let tref = &self.tref;
-        match tref {
-            witx::TypeRef::Name(other_type) => {
-                w.write_line(&format!("export type {} = {};", as_type, 
-                    &other_type.as_ref().into()));
-            }
-            witx::TypeRef::Value(witx_type) => {
-                define_as_witx_type(&as_type, &witx_type.as_ref())
-            }
-        };
-        w.eob();
     }
 }
 
-impl Render<AssemblyScript> for witx::Type {
-    fn render(&self, out: &mut PrettyWriter) {
-        
+impl Render<AssemblyScript<'_>> for witx::Type {
+    fn render(&self, w: &mut PrettyWriter) {
+        use witx::Type::*;
+        match self {
+            Builtin(builtin) => builtin.render(w),
+            List(elem) => {
+                w.write("StaticArray<");
+                elem.render(w);
+                w.write(">");
+            }
+            Variant(v) if v.is_bool() => { w.write("bool"); }
+            Variant(_) => panic!("reference to anonymous variant not supported"),
+            Record(_) => panic!("reference to anonymous record not supported"),
+            _ => unimplemented!(),
+        };
     }
+}
+
+impl Render<AssemblyScript<'_>> for witx::BuiltinType {
+    fn render(&self, w: &mut PrettyWriter) {
+        use witx::BuiltinType::*;
+        match self {
+            U8 { lang_c_char: _ } => w.write("u8"),
+            U16 => w.write("u16"),
+            U32 { lang_ptr_size: false } => w.write("u32"),
+            U32 { lang_ptr_size: true } => w.write("usize"),
+            U64 => w.write("u64"),
+            S8 => w.write("i8"),
+            S16 => w.write("i16"),
+            S32 => w.write("i32"),
+            S64 => w.write("i64"),
+            F32 => w.write("f32"),
+            F64 => w.write("f64"),
+            Char => w.write("u32"),
+        };
+    }
+}
+
+impl Render<AssemblyScript<'_>> for witx::NamedType {
+    fn render(&self, w: &mut PrettyWriter) {
+        let name = self.name.as_str();
+        match &self.tref {
+            TypeRef::Value(ty) => match ty.as_ref() {
+                Type::Record(ref r) => render_record(w, name, r),
+                Type::Handle(ref h) => render_handle(w, name, h),
+                Type::Variant(ref v) => render_variant(w, name, v),
+                Type::List {..}
+                | Type::Pointer {..}
+                | Type::ConstPointer {..}
+                | Type::Builtin {..} => render_alias(w, name, &self.tref)
+            }
+            TypeRef::Name(_nt) => render_alias(w, name, &self.tref)
+        }
+    }
+}
+
+fn render_handle(w: &mut PrettyWriter, name: &str, _: &HandleDatatype) {
+    w.write_line(&format!("export type {} = {};", name.to_camel_case(), ASType::Handle));
+}
+
+fn render_record(w: &mut PrettyWriter, name: &str, r: &RecordDatatype) {
+    w.write_line("// @ts-ignore: decorator")
+        .write_line("@unmanaged")
+        .write(&format!("export class {} ", name.to_camel_case()));
+
+    w.braced(|w| {
+        for member in &r.members {
+            let variant_name = to_as_name(member.name.as_str());
+            let variant_type = ASType::from(&member.tref);
+            write_docs(w, &member.docs);
+            w.write_line(&format!("{}: {};", variant_name, variant_type));
+        }
+    });
+}
+
+fn render_alias(w: &mut PrettyWriter, name: &str, alias: &TypeRef) {
+    w.write(&format!("export type {} = ", name.to_camel_case()));
+    alias.render(w);
+    w.write(";");
+}
+
+fn render_variant(
+    w: &mut PrettyWriter,
+    name: &str,
+    union: &witx::Variant,
+) {
+    let as_tag = ASType::from(&union.tag_repr);
+    let variants = &union.cases;
+    let class_name = name.to_camel_case();
+
+    let val_offset = union.payload_offset();
+    let val_size = union.mem_size();
+    w.write_line("// @ts-ignore: decorator")
+        .write_line("@unmanaged")
+        .write(&format!("export class {} ", class_name));
+    w.braced(|w| {
+        w.write_line(&format!("tag: {};", as_tag));
+        let pad_len = val_offset + val_size;
+        for i in 0..pad_len / 8 {
+            w.write_line(&format!("private __pad64_{}: u64;", i));
+        }
+        for i in 0..(pad_len & 7) / 4 {
+            w.write_line(&format!("private __pad32_{}: u32;", i));
+        }
+        for i in 0..(pad_len & 3) / 2 {
+            w.write_line(&format!("private __pad16_{}: u16;", i));
+        }
+        for i in 0..(pad_len & 1) {
+            w.write_line(&format!("private __pad8_{}: u8;", i));
+        }
+        w.eob();
+
+        w.write_line(&format!("constructor(tag: {}) {{", as_tag));
+        w.with_block(|w| {
+            w.write_line("this.tag = tag;").write_line(&format!(
+                "memory.fill(changetype<usize>(this) + {}, 0, {});",
+                val_offset, val_size
+            ));
+        });
+        w.write_line("}").eob();
+
+        w.write_line("// @ts-ignore: default").write_line(&format!(
+            "static new<T>(tag: u8, val: T = 0): {} {{",
+            class_name
+        ));
+        w.with_block(|w| {
+            w.write_line(&format!("let tu = new {}(tag);", class_name))
+                .write_line("tu.set(val);")
+                .write_line("return tu;");
+        });
+        w.write_line("}").eob();
+
+        w.write_line("get<T>(): T {");
+        w.with_block(|w| {
+            w.write_line("// @ts-ignore: cast")
+                .write_line(&format!(
+                    "let valBuf = changetype<usize>(this) + {};",
+                    val_offset
+                ))
+                .write_line("if (isReference<T>()) {");
+            w.with_block(|w| {
+                w.write_line("return changetype<T>(valBuf);"); });
+            w.write_line("} else {");
+            w.with_block(|w| {
+                w.write_line("return load<T>(valBuf);"); });
+            w.write_line("}");
+        });
+        w.write_line("}").eob();
+
+        w.write_line("// @ts-ignore: default")
+            .write_line("set<T>(val: T = 0): void {");
+        w.with_block(|w| {
+            w.write_line("// @ts-ignore: cast")
+                .write_line(&format!(
+                    "let valBuf = changetype<usize>(this) + {};",
+                    val_offset
+                ))
+                .write_line(&format!("memory.fill(valBuf, 0, {});", val_size))
+                .write_line("if (isReference<T>()) {");
+            w.with_block(|w| {
+                w.write_line("(val !== null) && memory.copy(valBuf, changetype<usize>(val), offsetof<T>());");
+            });
+            w.write_line("} else {");
+            w.with_block(|w| { w.write_line("store<T>(valBuf, val)"); });
+            w.write_line("}");
+        });
+        w.write_line("}");
+
+        for (i, variant) in variants.iter().enumerate() {
+            w.eob();
+            define_variant_case(w, &class_name, i, variant);
+        }
+    });
 }
 
 impl Generator {
@@ -62,7 +290,8 @@ impl Generator {
             self.header();
         }
         for type_ in document.typenames() {
-            self.define_type(type_.as_ref());
+            //self.define_type(type_.as_ref());
+            type_.render(&mut self.w);
         }
         for module in document.modules() {
             self.define_module(module.as_ref());
@@ -234,7 +463,7 @@ export class WasiArray<T> {
 
             for (i, variant) in variants.iter().enumerate() {
                 w.eob();
-                define_variant_case(w, as_type, i, variant);
+                define_variant_case(w, "deprecated", i, variant);
             }
         });
         self.w.write_line("}");
@@ -438,7 +667,7 @@ export class WasiArray<T> {
 
 fn define_variant_case(
     w: &mut PrettyWriter,
-    as_type: &ASType,
+    class_name: &str,
     i: usize,
     variant: &witx::Case,
 ) {
@@ -457,21 +686,21 @@ fn define_variant_case(
         }
     }
     w.eob();
-    define_variant_case_accessors(w, as_type, i, variant);
+    define_variant_case_accessors(w, class_name, i, variant);
 }
 
 fn define_variant_case_accessors(
     w: &mut PrettyWriter,
-    as_type: &ASType,
+    class_name: &str,
     i: usize,
     variant: &witx::Case,
 ) {
     let variant_name = variant.name.as_str();
     match variant.tref.as_ref() {
         None => {
-            w.write_line(&format!("static {}(): {} {{", variant_name, as_type))
+            w.write_line(&format!("static {}(): {} {{", variant_name, class_name))
                 .indent()
-                .write_line(&format!("return {}.new({});", as_type, i))
+                .write_line(&format!("return {}.new({});", class_name, i))
                 .write_line("}")
                 .eob();
 
@@ -490,10 +719,10 @@ fn define_variant_case_accessors(
             let as_variant_type = ASType::from(variant_type);
             w.write_line(&format!(
                 "static {}(val: {}): {} {{",
-                variant_name, as_variant_type, as_type
+                variant_name, as_variant_type, class_name
             ));
             w.with_block(|w| {
-                w.write_line(&format!("return {}.new({}, val);", as_type, i));
+                w.write_line(&format!("return {}.new({}, val);", class_name, i));
             });
             w.write_line("}").eob();
 

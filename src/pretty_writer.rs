@@ -3,7 +3,7 @@
 pub struct PrettyWriter {
     writer: String,
     indent: usize,
-    indent_bytes: &'static str,
+    indent_bytes: String,
     continuation_bytes: &'static str,
 }
 
@@ -11,17 +11,17 @@ const DEFAULT_CONTINUATION_BYTES: &str = "    ";
 
 impl PrettyWriter {    
     /// Create a new `PrettyWriter` with `indent` initial units of indentation
-    pub fn new_with_indent(indent: usize, indent_bytes: &'static str) -> Self {
+    pub fn new(indent_bytes: &str, writer: String) -> Self {
         PrettyWriter {
-            writer: String::new(),
-            indent,
-            indent_bytes,
+            writer,
+            indent: 0,
+            indent_bytes: indent_bytes.to_owned(),
             continuation_bytes: DEFAULT_CONTINUATION_BYTES,
         }
     }
 
-    pub fn new(indent_bytes: &'static str) -> Self {
-        Self::new_with_indent(0, indent_bytes)
+    pub fn with_ident(indent_bytes: &'static str) -> Self {
+        Self::new(indent_bytes, String::new())
     }
     /// Run block_ops as an indented block within the current `PrettyWriter`
     pub fn with_block(&mut self, block_ops: impl FnOnce(&mut Self) -> ()) -> &mut Self {
