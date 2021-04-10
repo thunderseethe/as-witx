@@ -20,7 +20,7 @@ impl PrettyWriter {
         }
     }
 
-    pub fn with_ident(indent_bytes: &'static str) -> Self {
+    pub fn with_indent(indent_bytes: &'static str) -> Self {
         Self::new(indent_bytes, String::new())
     }
     /// Run block_ops as an indented block within the current `PrettyWriter`
@@ -63,7 +63,7 @@ impl PrettyWriter {
     /// Output an indentation string
     pub fn indent(&mut self) -> &mut Self {
         self.writer.extend(
-            std::iter::repeat(self.indent_bytes)
+            std::iter::repeat(&self.indent_bytes)
                     .take(self.indent)
                     .flat_map(|s| s.chars()));
         self

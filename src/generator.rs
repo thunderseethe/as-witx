@@ -1,4 +1,5 @@
-use witx::{Bindgen, HandleDatatype, InterfaceFuncParam, Layout, RecordDatatype, Type, TypeRef};
+use witx::{Bindgen, HandleDatatype, Id, IntRepr, InterfaceFunc, InterfaceFuncParam, Layout, Module, RecordDatatype, Type, TypeRef};
+use itertools::Itertools;
 use heck::*;
 
 use crate::astype::*;
@@ -12,7 +13,15 @@ pub struct Generator {
     embed_header: bool,
 }
 
-trait Language {}
+trait Language {
+    fn indent_bytes() -> &'static str {
+        "    "
+    }
+    fn pretty_writer() -> PrettyWriter {
+        let indent = <Self as Language>::indent_bytes();
+        PrettyWriter::with_indent(indent)
+    }
+}
 struct AssemblyScript<'a> {
     w: &'a mut PrettyWriter,
     params: &'a [InterfaceFuncParam],
@@ -24,28 +33,18 @@ impl Language for AssemblyScript<'_> {}
 impl Bindgen for AssemblyScript<'_> {
     type Operand = String;
 
-    fn emit(
-        &mut self,
-        inst: &witx::Instruction<'_>,
-        operands: &mut Vec<Self::Operand>,
-        results: &mut Vec<Self::Operand>,
-    ) {
-        todo!()
-    }
-
     fn allocate_space(&mut self, slot: usize, ty: &witx::NamedType) {
-        // need to figure out size of ty, maybe just allocate pointer?
-        self.w.write_Line(&format!("let rp{} = heap.alloc({})", slot, /*TODO*/0));
+        self.w.write_line(&format!("let rp{} = new {}()", slot, ty.name.as_str().to_camel_case()));
     }
 
     fn push_block(&mut self) {
-        let mut prev = std::mem::replace(self.w, PrettyWriter::with_ident("    "));
+        let mut prev = std::mem::replace(self.w, AssemblyScript::pretty_writer());
         self.block_storage.push(prev.finish());
     }
 
     fn finish_block(&mut self, operand: Option<Self::Operand>) {
         let to_restore = self.block_storage.pop().unwrap();
-        let w = std::mem::replace(self.w, PrettyWriter::new("    ", to_restore));
+        let mut w = std::mem::replace(self.w, PrettyWriter::new(AssemblyScript::indent_bytes(), to_restore));
         let src = w.finish();
         match operand {
             None => {
@@ -60,34 +59,219 @@ impl Bindgen for AssemblyScript<'_> {
             }
         }
     }
+
+    fn emit(
+        &mut self,
+        inst: &witx::Instruction<'_>,
+        operands: &mut Vec<Self::Operand>,
+        results: &mut Vec<Self::Operand>,
+    ) {
+        use witx::Instruction;
+        let mut top_as = |cvt: &str| {
+            let mut s = operands.pop().unwrap();
+            s.push_str(" as ");
+            s.push_str(cvt);
+            results.push(s);
+        };
+
+        match inst {
+            Instruction::GetArg { nth } => {
+                let res = self.params[*nth].name.render_to_string();
+                results.push(res);
+            },
+            Instruction::AddrOf => {
+                results.push(format!("changetype<usize>({})", operands[0]));
+            }
+            Instruction::I64FromBitflags { .. } | Instruction::I64FromU64 => top_as("i64"),
+            Instruction::I32FromPointer
+            | Instruction::I32FromConstPointer
+            | Instruction::I32FromHandle { .. }
+            | Instruction::I32FromUsize
+            | Instruction::I32FromChar
+            | Instruction::I32FromU8
+            | Instruction::I32FromS8
+            | Instruction::I32FromChar8
+            | Instruction::I32FromU16
+            | Instruction::I32FromS16
+            | Instruction::I32FromU32
+            | Instruction::I32FromBitflags { .. } => top_as("i32"),
+
+            Instruction::EnumLower { .. } => {
+                results.push(format!("{}.tag as i32", operands[0]))
+            }
+            Instruction::EnumLift { ty } => {
+                let result = format!(
+                    "new {}({} as {})",
+                    ty.name.as_str().to_camel_case(),
+                    &operands[0],
+                    match ty.type_().as_ref() {
+                        Type::Variant(v) => {
+                            v.tag_repr.render_to_string()
+                        }
+                        _ => unreachable!()
+                    }
+                );
+                results.push(result);
+            }
+
+            Instruction::F32FromIf32
+            | Instruction::F64FromIf64
+            | Instruction::If32FromF32
+            | Instruction::If64FromF64
+            | Instruction::I64FromS64
+            | Instruction::I32FromS32 => {
+                results.push(operands.pop().unwrap());
+            }
+
+            Instruction::ListPointerLength => {
+                let list = operands.pop().unwrap();
+                results.push(format!("changetype<usize>({})", list));
+                results.push(format!("{}.length", list));
+            }
+
+            Instruction::S8FromI32 => top_as("i8"),
+            Instruction::Char8FromI32 | Instruction::U8FromI32 => top_as("u8"),
+            Instruction::S16FromI32 => top_as("i16"),
+            Instruction::U16FromI32 => top_as("u16"),
+            Instruction::S32FromI32 => {}
+            Instruction::U32FromI32 => top_as("u32"),
+            Instruction::S64FromI64 => {}
+            Instruction::U64FromI64 => top_as("u64"),
+            Instruction::UsizeFromI32 => top_as("usize"),
+            Instruction::HandleFromI32 { .. } => top_as("u32"),
+            Instruction::PointerFromI32 { .. } => top_as("*mut _"),
+            Instruction::ConstPointerFromI32 { .. } => top_as("*const _"),
+            Instruction::BitflagsFromI32 { .. } => unimplemented!(),
+            Instruction::BitflagsFromI64 { .. } => unimplemented!(),
+
+            Instruction::ReturnPointerGet { n } => {
+                results.push(format!("changetype<usize>(rp{})", n));
+            }
+
+            Instruction::Load { ty } => {
+                results.push(format!(
+                    "load<{}>({})",
+                    ty.name.as_str().to_camel_case(),
+                    &operands[0],
+                ));
+            }
+
+            Instruction::ReuseReturn => {
+                results.push("ret".to_string());
+            }
+
+            // AssemblyScript doesn't support tuples yet
+            Instruction::TupleLift { .. } => {
+                unimplemented!()
+            }
+            Instruction::ResultLift { .. } => {
+                unimplemented!()
+            }
+
+            Instruction::CharFromI32 => unimplemented!(),
+
+            Instruction::CallWasm {
+                module,
+                name,
+                params: _,
+                results: func_results,
+            } => {
+                assert!(func_results.len() < 2);
+                if func_results.len() > 0 {
+                    self.w.write("let ret = ");
+                    results.push("ret".to_string());
+                }
+                self.w.write(&format!("{}.{}({});",
+                    &module.to_snake_case(),
+                    to_as_name(&name.to_snake_case()),
+                    &operands.join(",")
+                ));
+            }
+
+            Instruction::Return { amt: 0 } => {}
+            Instruction::Return { amt: 1 } => {
+                self.w.write(&operands[0]);
+            }
+            // No tuple support
+            Instruction::Return { .. } => unimplemented!(),
+
+            Instruction::Store { .. }
+            | Instruction::ListFromPointerLength { .. }
+            | Instruction::CallInterface { .. }
+            | Instruction::ResultLower { .. }
+            | Instruction::TupleLower { .. }
+            | Instruction::VariantPayload => unimplemented!(),
+        }
+    }
 }
 
 trait Render<T: Language> {
     fn render(&self, out: &mut PrettyWriter);
+
+    fn render_to_string(&self) -> String {
+        let mut w = T::pretty_writer();
+        self.render(&mut w);
+        w.finish()
+    }
 }
 
-//impl Render<AssemblyScript> for witx::NamedType {
-//    fn render(&self, w: &mut PrettyWriter) {
-//        let as_type = ASType::Alias(self.name.as_str().to_string());
-//        let docs = &self.docs;
-//        if docs.is_empty() {
-//            w.write_line(&format!("/** {} */", as_type));
-//        } else {
-//            write_docs(w, &self.docs);
-//        }
-//        let tref = &self.tref;
-//        match tref {
-//            witx::TypeRef::Name(other_type) => {
-//                let other_type: ASType = other_type.as_ref().into();
-//                w.write_line(&format!("export type {} = {};", as_type, other_type));
-//            },
-//            witx::TypeRef::Value(witx_type) => {
-//                witx_type.render(w);
-//            }
-//        };
-//        w.eob();
-//    }
-//}
+impl Render<AssemblyScript<'_>> for InterfaceFunc {
+    fn render(&self, w: &mut PrettyWriter) {
+        write_docs(w, &self.docs);
+        /* Consider handling non snake case name */
+        w.write("export declare function ");
+        w.write(&to_as_name(&self.name
+            .render_to_string()
+            .to_snake_case()));
+        
+        let (params, results) = self.wasm_signature();
+        assert!(results.len() <= 1);
+        w.write("(");
+        for (i, param) in params.iter().enumerate() {
+            w.write(&format!("arg{}: ", i));
+            param.render(w);
+            w.write(", ");
+        }
+        w.write(")");
+
+        if self.noreturn {
+            w.write(": void");
+        } else if let Some(result) = results.get(0) {
+            w.write(": ");
+            result.render(w);
+        }
+        w.write(";");
+    }
+}
+
+impl Render<AssemblyScript<'_>> for witx::WasmType {
+    fn render(&self, w: &mut PrettyWriter) {
+        use witx::WasmType;
+        match self {
+            WasmType::F32 => w.write("f32"),
+            WasmType::F64 => w.write("f64"),
+            WasmType::I32 => w.write("i32"),
+            WasmType::I64 => w.write("i64"),
+        };
+    }
+}
+
+impl Render<AssemblyScript<'_>> for Id {
+    fn render(&self, w: &mut PrettyWriter) {
+        w.write(&to_as_name(self.as_str()));
+    }
+}
+
+impl Render<AssemblyScript<'_>> for IntRepr {
+    fn render(&self, w: &mut PrettyWriter) {
+        match self {
+            IntRepr::U8 => w.write("u8"),
+            IntRepr::U16 => w.write("u16"),
+            IntRepr::U32 => w.write("u32"),
+            IntRepr::U64 => w.write("u64"),
+        };
+    }
+}
 
 impl Render<AssemblyScript<'_>> for witx::TypeRef {
     fn render(&self, w: &mut PrettyWriter) {
@@ -103,6 +287,67 @@ impl Render<AssemblyScript<'_>> for witx::TypeRef {
     }
 }
 
+impl Render<AssemblyScript<'_>> for Module {
+    fn render(&self, w: &mut PrettyWriter) {
+        for f in self.funcs() {
+            render_highlevel(&f, &self.name, w);
+            w.write("\n\n");
+        }
+        // TODO: Finish module impl
+
+        let as_name = self.name.as_str().to_camel_case();
+        w.write("export namespace ")
+         .write(&as_name)
+         .braced(|w| {
+            for f in self.funcs() {
+                f.render(w);
+                w.eob();
+            }
+         });
+    }
+}
+
+fn render_highlevel(func: &InterfaceFunc, module: &Id, w: &mut PrettyWriter) {
+    let as_name = func.name.render_to_string().to_snake_case();
+    write_docs(w, &func.docs);
+    // TODO: Write docs for params and results
+
+    w.write("export function ")
+     .write(&as_name)
+     .write("(");
+
+    
+
+    w.write(&func.params.iter()
+        .map(|p| {
+            format!("{}: {}", p.name.render_to_string(), p.tref.render_to_string())
+        })
+        .intersperse(", ".to_string())
+        .collect::<String>());
+
+    match func.results.len() {
+        0 => {},
+        1 => {
+            w.write(": ");
+            func.results[0].tref.render(w);
+        }
+        _ => {
+            // TODO: Figure out tuples
+            unimplemented!()
+        }
+    }
+
+    w.braced(|w| {
+        func.call_wasm(module, &mut AssemblyScript {
+            w,
+            params: &func.params,
+            block_storage: Vec::new(),
+            blocks: Vec::new(),
+        });
+    });
+
+}
+
 impl Render<AssemblyScript<'_>> for witx::Type {
     fn render(&self, w: &mut PrettyWriter) {
         use witx::Type::*;
@@ -114,7 +359,24 @@ impl Render<AssemblyScript<'_>> for witx::Type {
                 w.write(">");
             }
             Variant(v) if v.is_bool() => { w.write("bool"); }
-            Variant(_) => panic!("reference to anonymous variant not supported"),
+            Variant(v) => {
+                match v.as_expected() {
+                    None => panic!("reference to anonymous variant not supported"),
+                    Some((ok, err)) => {
+                        w.write("WasiResult<");
+                        match ok {
+                            Some(ty) => ty.render(w),
+                            None => { w.write("void"); }
+                        };
+                        w.write(",");
+                        match err {
+                            Some(ty) => ty.render(w),
+                            None => { w.write("void"); }
+                        }
+                        w.write(">");
+                    }
+                }
+            }
             Record(_) => panic!("reference to anonymous record not supported"),
             _ => unimplemented!(),
         };
@@ -280,7 +542,7 @@ fn render_variant(
 
 impl Generator {
     pub fn new(module_name: Option<String>, embed_header: bool) -> Self {
-        let w = PrettyWriter::new("    ");
+        let w = PrettyWriter::with_indent("    ");
         Generator { w, module_name, embed_header }
     }
 
@@ -294,7 +556,7 @@ impl Generator {
             type_.render(&mut self.w);
         }
         for module in document.modules() {
-            self.define_module(module.as_ref());
+            module.render(&mut self.w);
         }
         for c in document.constants() {
             self.w.write_line(&format!("public const {}_{}: {} = {};"

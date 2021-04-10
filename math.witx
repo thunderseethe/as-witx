@@ -1,0 +1,25 @@
+(typename $vec3
+    (record
+        (field $x f32)
+        (field $y f32)
+        (field $z f32)))
+(typename $quat
+    (record
+        (field $x f32)
+        (field $y f32)
+        (field $z f32)
+        (field $w f32)))
+(typename $errno
+    (enum (@witx tag u32)
+        $ok
+        $missing_memory))
+(module $wasm_glam
+    (@interface func (export "unit_z")
+        (result $ret (expected $vec3 (error $errno))))
+    (@interface func (export "normalize")
+        (param $v $vec3)
+        (result $ret (expected $vec3 (error $errno))))
+    (@interface func (export "mul_vec3")
+        (param $q $quat)
+        (param $v $vec3)
+        (result $ret (expected $vec3 (error $errno)))))
