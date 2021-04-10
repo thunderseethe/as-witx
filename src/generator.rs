@@ -34,7 +34,7 @@ impl Bindgen for AssemblyScript<'_> {
     type Operand = String;
 
     fn allocate_space(&mut self, slot: usize, ty: &witx::NamedType) {
-        self.w.write_line(&format!("let rp{} = new {}()", slot, ty.name.as_str().to_camel_case()));
+        self.w.write_line(&format!("let rp{} = new {}();", slot, ty.name.as_str().to_camel_case()));
     }
 
     fn push_block(&mut self) {
@@ -54,7 +54,7 @@ impl Bindgen for AssemblyScript<'_> {
                 if src.is_empty() {
                     self.blocks.push(s);
                 } else {
-                    self.blocks.push(format!("{{ {}; {} }}", src, s));
+                    self.blocks.push(format!("{{\n{};\n{}\n}}", src, s));
                 }
             }
         }
@@ -165,7 +165,9 @@ impl Bindgen for AssemblyScript<'_> {
                 unimplemented!()
             }
             Instruction::ResultLift { .. } => {
-                unimplemented!()
+                let err = self.blocks.pop().unwrap();
+                let ok = self.blocks.pop().unwrap();
+                results.push(format!("if {} == 0 {{ WasiResult.ok({}) }} else {{ WasiResult.err({}) }}", operands[0], &ok, &err));
             }
 
             Instruction::CharFromI32 => unimplemented!(),
@@ -325,6 +327,8 @@ fn render_highlevel(func: &InterfaceFunc, module: &Id, w: &mut PrettyWriter) {
         .intersperse(", ".to_string())
         .collect::<String>());
 
+    w.write(")");
+
     match func.results.len() {
         0 => {},
         1 => {
@@ -338,12 +342,14 @@ fn render_highlevel(func: &InterfaceFunc, module: &Id, w: &mut PrettyWriter) {
     }
 
     w.braced(|w| {
+        let mut subw = AssemblyScript::pretty_writer();
         func.call_wasm(module, &mut AssemblyScript {
-            w,
+            w: &mut subw,
             params: &func.params,
             block_storage: Vec::new(),
             blocks: Vec::new(),
         });
+        w.write(&subw.finish());
     });
 
 }
@@ -368,7 +374,7 @@ impl Render<AssemblyScript<'_>> for witx::Type {
                             Some(ty) => ty.render(w),
                             None => { w.write("void"); }
                         };
-                        w.write(",");
+                        w.write(", ");
                         match err {
                             Some(ty) => ty.render(w),
                             None => { w.write("void"); }
@@ -890,40 +896,6 @@ export class WasiArray<T> {
             "): {}{};",
             return_as_type_and_comment.0, return_as_type_and_comment.1
         ));
-    }
-
-    fn params_to_as(params: &[witx::InterfaceFuncParam]) -> Vec<(String, ASType)> {
-        let mut as_params = vec![];
-        for param in params {
-            let leaf_type = Self::leaf_type(&param.tref);
-            let as_leaf_type = ASType::from(leaf_type).name(param.tref.type_name());
-            let (first, second) = as_leaf_type.decompose();
-            match &param.tref {
-                witx::TypeRef::Name(name) => {
-                    as_params.push((
-                        format!("{}{}", param.name.as_str(), first.1),
-                        ASType::from(name.as_ref()),
-                    ));
-                }
-                _ => {
-                    as_params.push((format!("{}{}", param.name.as_str(), first.1), first.0));
-                }
-            }
-            if let Some(second) = second {
-                as_params.push((format!("{}{}", param.name.as_str(), second.1), second.0))
-            }
-        }
-        as_params
-    }
-
-    fn leaf_type(type_ref: &witx::TypeRef) -> &witx::Type {
-        match type_ref {
-            witx::TypeRef::Name(other_type) => {
-                let x = other_type.as_ref();
-                Self::leaf_type(&x.tref)
-            }
-            witx::TypeRef::Value(type_) => type_.as_ref(),
-        }
     }
 }
 
