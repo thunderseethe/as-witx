@@ -69,11 +69,8 @@ impl PrettyWriter {
         self
     }
 
-    /// Continuation
-    pub fn continuation(&mut self) -> &mut Self {
-        self.indent();
-        self.writer.push_str(self.continuation_bytes);
-        self
+    pub fn mut_str(&mut self) -> &mut String {
+        &mut self.writer
     }
 
     pub fn eol(&mut self) -> &mut Self {
