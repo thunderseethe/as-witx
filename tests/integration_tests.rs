@@ -1,5 +1,5 @@
 use as_witx_lib::Generator;
-use witx::*;
+
 use std::{fs::File, io::Read, path::PathBuf};
 
 use rayon::prelude::*;

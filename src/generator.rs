@@ -9,7 +9,6 @@ use std::path::Path;
 
 pub struct Generator {
     w: PrettyWriter,
-    module_name: Option<String>,
     embed_header: bool,
 }
 
@@ -52,9 +51,11 @@ impl Bindgen for AssemblyScript<'_> {
             },
             Some(s) => {
                 if src.is_empty() {
-                    self.blocks.push(s);
+                    self.blocks.push(format!("{}", s));
                 } else {
-                    self.blocks.push(format!("{{\n{};\n{}\n}}", src, s));
+                    // TODO: Figure out how to make sense of this in AS
+                    // Probably need a closure that is immediately evaluated
+                    self.blocks.push(format!("{{ {}; {} }}", src, s));
                 }
             }
         }
@@ -167,7 +168,7 @@ impl Bindgen for AssemblyScript<'_> {
             Instruction::ResultLift { .. } => {
                 let err = self.blocks.pop().unwrap();
                 let ok = self.blocks.pop().unwrap();
-                results.push(format!("if {} == 0 {{ WasiResult.ok({}) }} else {{ WasiResult.err({}) }}", operands[0], &ok, &err));
+                results.push(format!("{} == 0 ? WasiResult.ok({}) : WasiResult.err({})", operands[0], &ok, &err));
             }
 
             Instruction::CharFromI32 => unimplemented!(),
@@ -186,13 +187,13 @@ impl Bindgen for AssemblyScript<'_> {
                 self.w.write(&format!("{}.{}({});",
                     &module.to_snake_case(),
                     to_as_name(&name.to_snake_case()),
-                    &operands.join(",")
+                    &operands.join(", ")
                 ));
             }
 
             Instruction::Return { amt: 0 } => {}
             Instruction::Return { amt: 1 } => {
-                self.w.write(&operands[0]);
+                self.w.write(&format!("return {};", &operands[0]));
             }
             // No tuple support
             Instruction::Return { .. } => unimplemented!(),
@@ -277,7 +278,6 @@ impl Render<AssemblyScript<'_>> for IntRepr {
 
 impl Render<AssemblyScript<'_>> for witx::TypeRef {
     fn render(&self, w: &mut PrettyWriter) {
-        use witx::TypeRef;
         match self {
             TypeRef::Name(t) => {
                 w.write(&t.name.as_str().to_camel_case());
@@ -549,7 +549,7 @@ fn render_variant(
 impl Generator {
     pub fn new(module_name: Option<String>, embed_header: bool) -> Self {
         let w = PrettyWriter::with_indent("    ");
-        Generator { w, module_name, embed_header }
+        Generator { w, embed_header }
     }
 
     pub fn generate<P: AsRef<Path>>(&mut self, path: P) -> Result<String, Error> {
@@ -629,273 +629,6 @@ export class WasiArray<T> {
 ",
         )
         .eob();
-    }
-
-    fn define_as_alias(
-        &mut self,
-        as_type: &ASType,
-        other_type: &ASType,
-    ) {
-        self.w.write_line(&format!("export type {} = {};", as_type, other_type));
-    }
-
-    fn define_as_handle(&mut self, as_type: &ASType) {
-        self.w.write_line(&format!("export type {} = {};", as_type, ASType::Handle));
-    }
-
-    fn define_as_variant(
-        &mut self,
-        as_type: &ASType,
-        union: &witx::Variant,
-    ) {
-        let as_tag = ASType::from(&union.tag_repr);
-        let variants = &union.cases;
-
-        let val_offset = union.payload_offset();
-        let val_size = union.mem_size();
-        self.w.write_line("// @ts-ignore: decorator")
-         .write_line("@unmanaged")
-         .write_line(&format!("export class {} {{", as_type));
-        self.w.with_block(|w| {
-            w.write_line(&format!("tag: {};", as_tag));
-            let pad_len = val_offset + val_size;
-            for i in 0..pad_len / 8 {
-                w.write_line(&format!("private __pad64_{}: u64;", i));
-            }
-            for i in 0..(pad_len & 7) / 4 {
-                w.write_line(&format!("private __pad32_{}: u32;", i));
-            }
-            for i in 0..(pad_len & 3) / 2 {
-                w.write_line(&format!("private __pad16_{}: u16;", i));
-            }
-            for i in 0..(pad_len & 1) {
-                w.write_line(&format!("private __pad8_{}: u8;", i));
-            }
-            w.eob();
-
-            w.write_line(&format!("constructor(tag: {}) {{", as_tag));
-            w.with_block(|w| {
-                w.write_line("this.tag = tag;").write_line(&format!(
-                    "memory.fill(changetype<usize>(this) + {}, 0, {});",
-                    val_offset, val_size
-                ));
-            });
-            w.write_line("}").eob();
-
-            w.write_line("// @ts-ignore: default").write_line(&format!(
-                "static new<T>(tag: u8, val: T = 0): {} {{",
-                as_type
-            ));
-            w.with_block(|w| {
-                w.write_line(&format!("let tu = new {}(tag);", as_type))
-                 .write_line("tu.set(val);")
-                 .write_line("return tu;");
-            });
-            w.write_line("}").eob();
-
-            w.write_line("get<T>(): T {");
-            w.with_block(|w| {
-                w.write_line("// @ts-ignore: cast")
-                    .write_line(&format!(
-                        "let valBuf = changetype<usize>(this) + {};",
-                        val_offset
-                    ))
-                    .write_line("if (isReference<T>()) {");
-                w.with_block(|w| {
-                    w.write_line("return changetype<T>(valBuf);"); });
-                w.write_line("} else {");
-                w.with_block(|w| {
-                    w.write_line("return load<T>(valBuf);"); });
-                w.write_line("}");
-            });
-            w.write_line("}").eob();
-
-            w.write_line("// @ts-ignore: default")
-                .write_line("set<T>(val: T = 0): void {");
-            w.with_block(|w| {
-                w.write_line("// @ts-ignore: cast")
-                    .write_line(&format!(
-                        "let valBuf = changetype<usize>(this) + {};",
-                        val_offset
-                    ))
-                    .write_line(&format!("memory.fill(valBuf, 0, {});", val_size))
-                    .write_line("if (isReference<T>()) {");
-                w.with_block(|w| {
-                    w.write_line("(val !== null) && memory.copy(valBuf, changetype<usize>(val), offsetof<T>());");
-                });
-                w.write_line("} else {");
-                w.with_block(|w| { w.write_line("store<T>(valBuf, val)"); });
-                w.write_line("}");
-            });
-            w.write_line("}");
-
-            for (i, variant) in variants.iter().enumerate() {
-                w.eob();
-                define_variant_case(w, "deprecated", i, variant);
-            }
-        });
-        self.w.write_line("}");
-    }
-
-    fn define_as_builtin(
-        &mut self,
-        as_type: &ASType,
-        actual_as_type: &ASType,
-    ) -> () {
-        self.w.write_line(&format!("export type {} = {};", as_type, actual_as_type));
-    }
-
-    fn define_as_record(
-        &mut self,
-        as_type: &ASType,
-        record: &witx::RecordDatatype,
-    ) {
-        self.w.write_line("// @ts-ignore: decorator")
-            .write_line("@unmanaged")
-            .write("export class ")
-            .write(&(format!("{}", as_type).to_camel_case()))
-            .write(" ");
-
-        self.w.braced(|w| {
-            for member in &record.members {
-                let variant_name = to_as_name(member.name.as_str());
-                let variant_type = ASType::from(&member.tref);
-                write_docs(w, &member.docs);
-                w.write_line(&format!("{}: {};", variant_name, variant_type));
-            }
-        });
-    }
-
-    fn define_as_list(
-        &mut self,
-        as_type: &ASType,
-        actual_as_type: &ASType,
-    ) {
-        self.w.write_line(&format!(
-            "export type {} = WasiArray<{}>;",
-            as_type, actual_as_type
-        ));
-    }
-
-    fn define_as_witx_type(
-        &mut self,
-        as_type: &ASType,
-        witx_type: &witx::Type,
-    ) {
-        use witx::Type::*;
-        match witx_type {
-            Handle(_handle) => self.define_as_handle(as_type),
-            Builtin(builtin) => self.define_as_builtin(as_type, &builtin.into()),
-            Variant(ref variant) => self.define_as_variant(as_type, variant),
-            Record(ref record) =>  self.define_as_record(as_type, record),
-            List(elem) => self.define_as_list(as_type, &ASType::from(elem)),
-            ConstPointer(_) | witx::Type::Pointer(_) => {
-                panic!("Typedef's pointers are not implemented")
-            }
-        };
-    }
-
-    fn define_type(&mut self, type_: &witx::NamedType) {
-        let as_type = ASType::Alias(type_.name.as_str().to_string());
-        let docs = &type_.docs;
-        if docs.is_empty() {
-            self.w.write_line(&format!("/** {} */", as_type));
-        } else {
-            write_docs(&mut self.w, &type_.docs);
-        }
-        let tref = &type_.tref;
-        match tref {
-            witx::TypeRef::Name(other_type) => {
-                self.define_as_alias(&as_type, &other_type.as_ref().into())
-            }
-            witx::TypeRef::Value(witx_type) => {
-                self.define_as_witx_type(&as_type, &witx_type.as_ref())
-            }
-        };
-        self.w.eob();
-    }
-
-    fn define_module(&mut self, module: &witx::Module) {
-        self.w.eob().write_line(&format!(
-            "// ----------------------[{}]----------------------",
-            module.name.as_str()
-        ));
-        for func in module.funcs() {
-            self.define_func(module.name.as_str(), func.as_ref());
-            self.w.eob();
-        }
-    }
-
-    fn define_func(&mut self, module_name: &str, func: &witx::InterfaceFunc) {
-        let docs = &func.docs;
-        let name = func.name.as_str();
-        if docs.is_empty() {
-            self.w.write_line(&format!("\n/** {} */", name));
-        } else {
-            write_docs(&mut self.w, docs);
-        }
-        let s_in: Vec<_> = func
-            .params
-            .iter()
-            .map(|param| param.name.as_str().to_string())
-            .collect();
-        let s_out: Vec<_> = func
-            .results
-            .iter()
-            .map(|param| param.name.as_str().to_string())
-            .collect();
-        let module_name = match self.module_name.as_ref() {
-            None => module_name,
-            Some(module_name) => module_name.as_str(),
-        };
-        self.w.write_line("/**")
-            .write_line(&format!(" * in:  {}", s_in.join(", ")))
-            .write_line(&format!(" * out: {}", s_out.join(", ")))
-            .write_line(" */");
-        self.w.write_line("// @ts-ignore: decorator")
-            .write_line(&format!("@external(\"{}\", \"{}\")", module_name, name))
-            .write_line(&format!("export declare function {}(", name));
-
-        let params = &func.params;
-        let as_params = Self::params_to_as(params);
-        let results = &func.results;
-        let as_results = Self::params_to_as(results);
-        let return_value = as_results.get(0);
-        let as_results = if as_results.is_empty() {
-            &[]
-        } else {
-            &as_results[1..]
-        };
-        let as_params: Vec<_> = as_params
-            .iter()
-            .map(|(v, t)| format!("{}: {}", v, t))
-            .collect();
-        let as_results: Vec<_> = as_results
-            .iter()
-            .map(|(v, t)| format!("{}_ptr: {}", v, ASType::MutPtr(Box::new(t.clone()))))
-            .collect();
-        if !as_params.is_empty() {
-            if !as_results.is_empty() {
-                self.w.continuation()
-                    .write(&as_params.join(", "))
-                    .write(",")
-                    .eol();
-            } else {
-                self.w.continuation().write_line(&as_params.join(", "));
-            }
-        }
-        println!("{:?}", return_value);
-        let return_as_type_and_comment = match return_value {
-            None => (ASType::Void, "".to_string()),
-            Some(x) => (x.1.clone(), format!(" /* {} */", x.0)),
-        };
-        if !as_results.is_empty() {
-            self.w.continuation().write_line(&as_results.join(", "));
-        }
-        self.w.write_line(&format!(
-            "): {}{};",
-            return_as_type_and_comment.0, return_as_type_and_comment.1
-        ));
     }
 }
 
